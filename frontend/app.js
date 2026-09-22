@@ -1,15 +1,150 @@
-import {auth,googleProvider,signInWithPopup,RecaptchaVerifier,signInWithPhoneNumber,onAuthStateChanged,signOut} from './firebase.js';
-const API='http://localhost:8000';let S={movie:null,theatre:null,show:null,seats:[],expires:null,timer:null,userId:null};
-const movies=[['Skyline Protocol','Action, Thriller',8.4,'Hindi','https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=700&q=80'],['Midnight Café','Drama, Romance',8.1,'Hindi','https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?auto=format&fit=crop&w=700&q=80'],['Orbit 9','Sci-Fi, Adventure',8.7,'English','https://images.unsplash.com/photo-1440404653325-ab127d49abc1?auto=format&fit=crop&w=700&q=80'],['Laughing Matters','Comedy',7.6,'Hindi','https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&w=700&q=80'],['The Last Signal','Horror, Thriller',7.9,'Hindi','https://images.unsplash.com/photo-1500534623283-312aade485b7?auto=format&fit=crop&w=700&q=80'],['Courtyard Stories','Family, Drama',8,'Hindi','https://images.unsplash.com/photo-1518709594023-6eab9bab7b23?auto=format&fit=crop&w=700&q=80']];
-const theatres=['PVR Cinemas - World Trade Park','INOX - GT Central','Cinepolis - Triton Mega Mall','Raj Mandir Cinema'];
-function render(list=movies){grid.innerHTML=list.map((m,i)=>`<article class="movie" onclick="openBook(${i})"><img src="${m[4]}"><div class="movie-info"><b>${m[0]}</b><div class="meta">${m[1]} • ${m[3]}</div><div>★ ${m[2]}</div></div></article>`).join('')}
-function openBook(i){S.movie=movies[i];book.classList.remove('hidden');pay.classList.add('hidden');done.classList.add('hidden');bookTitle.textContent='Book '+S.movie[0];theatres.innerHTML=theatres.map((t,j)=>`<div class="item" onclick="selectTheatre(${j})"><b>${t}</b><div class="meta">${['Malviya Nagar','JLN Marg','Jhotwara','C-Scheme'][j]}, Jaipur</div></div>`).join('');window.scrollTo({top:book.offsetTop-70,behavior:'smooth'})}
-function selectTheatre(i){S.theatre=theatres[i];shows.innerHTML=['10:15','13:30','16:45','19:30','22:15'].map((t,j)=>`<div class="item" onclick="selectShow('${t}')"><b>${t}</b><div class="meta">${['2D','2D','3D','IMAX','2D'][j]} • ${S.movie[3]} • ₹${j%2?220:180} • ${36-j*5} seats</div></div>`).join('')}
-function selectShow(time){S.show={time};S.seats=[];for(const r of 'ABCDEF')for(let n=1;n<=10;n++){const idx=S.seats.length;S.seats.push({id:idx+1,num:r+n,type:r<'C'?'Standard':r<'E'?'Premium':'Recliner',price:r<'C'?180:r<'E'?260:360,sold:[2,8,19,35,43,58].includes(idx+1),selected:false})}seats.innerHTML=S.seats.map(s=>`<button class="seat ${s.sold?'sold':''}" ${s.sold?'disabled':''} onclick="toggle(${s.id})" id="s${s.id}">${s.num}</button>`).join('');update()}
-function toggle(id){const s=S.seats.find(x=>x.id===id);s.selected=!s.selected;document.querySelector('#s'+id).classList.toggle('selected',s.selected);update()}
-function chosen(){return S.seats.filter(s=>s.selected)}
-function update(){total.textContent='₹'+chosen().reduce((a,s)=>a+s.price,0)}
-function checkout(){if(!chosen().length)return alert('Select at least one seat.');S.expires=Date.now()+300000;summary.innerHTML=`<p><b>${S.movie[0]}</b><br>${S.theatre}<br>Today • ${S.show.time}<br>Seats: ${chosen().map(s=>s.num).join(', ')}<br><b>Total: ₹${chosen().reduce((a,s)=>a+s.price,0)}</b></p>`;pay.classList.remove('hidden');book.classList.add('hidden');clearInterval(S.timer);S.timer=setInterval(()=>{const left=Math.max(0,S.expires-Date.now());clock.textContent=`${String(Math.floor(left/60000)).padStart(2,'0')}:${String(Math.floor(left/1000)%60).padStart(2,'0')}`;if(!left){clearInterval(S.timer);alert('Reservation expired.');hidePay();openBook(movies.indexOf(S.movie))}},250)}
-function confirmPay(){clearInterval(S.timer);const id='BTS-'+Math.floor(100000+Math.random()*900000);details.innerHTML=`<p><b>Booking ID:</b> ${id}</p><p>${S.movie[0]} • ${S.theatre} • ${S.show.time}</p><p>Seats: ${chosen().map(s=>s.num).join(', ')} • ₹${chosen().reduce((a,s)=>a+s.price,0)}</p>`;qr.innerHTML=`<img width="190" src="https://api.qrserver.com/v1/create-qr-code/?size=190x190&data=${encodeURIComponent(id)}">`;pay.classList.add('hidden');done.classList.remove('hidden');window.scrollTo({top:done.offsetTop-70,behavior:'smooth'})}
-function hideAll(){book.classList.add('hidden')}function hidePay(){clearInterval(S.timer);pay.classList.add('hidden');book.classList.remove('hidden')}function print(){window.print()}
-search.oninput=e=>render(movies.filter(m=>(m[0]+' '+m[1]).toLowerCase().includes(e.target.value.toLowerCase())));document.querySelectorAll('.pill').forEach(b=>b.onclick=()=>{document.querySelectorAll('.pill').forEach(x=>x.classList.remove('active'));b.classList.add('active');render(b.dataset.g==='all'?movies:movies.filter(m=>m[1].toLowerCase().includes(b.dataset.g.toLowerCase())))});let confirmationResult=null;let recaptcha=null;async function syncUser(user){if(!user){S.userId=null;userLabel.textContent='';signin.textContent='Sign in';return}try{const r=await fetch(API+'/auth/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({firebase_uid:user.uid,email:user.email||null,phone_number:user.phoneNumber||null})});if(r.ok)S.userId=(await r.json()).user_id}catch(e){console.warn('Backend auth sync unavailable',e)}if(!S.userId)S.userId=1;userLabel.textContent=user.displayName||user.email||user.phoneNumber||'Signed in';signin.textContent='Sign out'}function openAuth(){authModal.classList.remove('hidden');authError.textContent=''}function closeAuth(){authModal.classList.add('hidden')}signin.onclick=async()=>{if(auth.currentUser){await signOut(auth)}else openAuth()};googleBtn.onclick=async()=>{try{await signInWithPopup(auth,googleProvider);closeAuth()}catch(e){authError.textContent=e.message}};phoneBtn.onclick=async()=>{try{if(!recaptcha)recaptcha=new RecaptchaVerifier(auth,'recaptcha-container',{size:'invisible'});confirmationResult=await signInWithPhoneNumber(auth,phoneInput.value.trim(),recaptcha);otpArea.classList.remove('hidden');phoneBtn.classList.add('hidden')}catch(e){authError.textContent=e.message}};verifyBtn.onclick=async()=>{try{await confirmationResult.confirm(otpInput.value.trim());closeAuth()}catch(e){authError.textContent='Invalid OTP. Please try again.'}};onAuthStateChanged(auth,syncUser);window.openBook=openBook;window.selectTheatre=selectTheatre;window.selectShow=selectShow;window.toggle=toggle;window.checkout=checkout;window.confirmPay=confirmPay;window.hideAll=hideAll;window.hidePay=hidePay;window.print=print;window.closeAuth=closeAuth;render();
+import { auth, googleProvider, signInWithPopup, RecaptchaVerifier, signInWithPhoneNumber, onAuthStateChanged, signOut } from './firebase.js';
+
+const API = 'http://localhost:8000';
+let S = { movie: null, theatre: null, show: null, seats: [], expires: null, timer: null, userId: null, reservationId: null, bookingId: null };
+
+const $ = id => document.getElementById(id);
+
+async function api(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (auth.currentUser) headers.Authorization = `Bearer ${await auth.currentUser.getIdToken()}`;
+  if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+  const res = await fetch(API + path, { ...options, headers });
+  if (!res.ok) {
+    let message = `Request failed (${res.status})`;
+    try { message = (await res.json()).detail || message; } catch {}
+    throw new Error(message);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+function movieCard(m) {
+  return `<article class="movie" onclick="openBook(${m.movie_id})">
+    <img src="${m.poster_url}" alt="${m.title}">
+    <div class="movie-info"><b>${m.title}</b><div class="meta">${m.genre} • ${m.language}</div><div>★ ${m.rating}</div></div>
+  </article>`;
+}
+
+async function loadMovies(query = '', genre = 'all') {
+  try {
+    const params = new URLSearchParams();
+    if (query) params.set('search', query);
+    if (genre !== 'all') params.set('genre', genre);
+    const data = await api('/movies' + (params.toString() ? '?' + params : ''));
+    $('grid').innerHTML = data.map(movieCard).join('');
+  } catch (e) { $('grid').innerHTML = `<p class="muted">Could not load movies: ${e.message}</p>`; }
+}
+
+async function openBook(movieId) {
+  try {
+    S.movie = await api('/movies/' + movieId);
+    $('book').classList.remove('hidden'); $('pay').classList.add('hidden'); $('done').classList.add('hidden');
+    $('bookTitle').textContent = 'Book ' + S.movie.title;
+    const theatres = await api('/theatres?city=Jaipur');
+    $('theatres').innerHTML = theatres.map(t => `<div class="item" onclick="selectTheatre(${t.theatre_id})"><b>${t.name}</b><div class="meta">${t.location}</div></div>`).join('');
+    window.scrollTo({ top: $('book').offsetTop - 70, behavior: 'smooth' });
+  } catch (e) { alert(e.message); }
+}
+
+async function selectTheatre(theatreId) {
+  try {
+    const all = await api('/theatres?city=Jaipur');
+    S.theatre = all.find(t => t.theatre_id === theatreId);
+    const date = new Date().toISOString().slice(0, 10);
+    const shows = await api(`/showtimes/${S.movie.movie_id}/${theatreId}/${date}`);
+    $('shows').innerHTML = shows.length ? shows.map(s => `<div class="item" onclick="selectShow(${s.showtime_id})"><b>${s.time}</b><div class="meta">${s.format} • ${s.language}</div></div>`).join('') : '<p class="muted">No shows today.</p>';
+  } catch (e) { alert(e.message); }
+}
+
+async function selectShow(showtimeId) {
+  try {
+    const shows = await api(`/showtimes/${S.movie.movie_id}/${S.theatre.theatre_id}/${new Date().toISOString().slice(0,10)}`);
+    S.show = shows.find(s => s.showtime_id === showtimeId);
+    const data = await api('/seats/' + showtimeId);
+    S.seats = data.map(s => ({ ...s, selected: false, sold: s.is_booked }));
+    renderSeats(); update();
+  } catch (e) { alert(e.message); }
+}
+
+function renderSeats() {
+  $('seats').innerHTML = S.seats.map(s => `<button class="seat ${s.sold ? 'sold' : ''}" ${s.sold ? 'disabled' : ''} onclick="toggle(${s.seat_id})" id="s${s.seat_id}">${s.seat_number}</button>`).join('');
+}
+function toggle(id) {
+  const s = S.seats.find(x => x.seat_id === id);
+  if (!s || s.sold) return;
+  s.selected = !s.selected;
+  $('s' + id).classList.toggle('selected', s.selected);
+  update();
+}
+function chosen() { return S.seats.filter(s => s.selected); }
+function update() { $('total').textContent = '₹' + chosen().reduce((a, s) => a + s.price, 0); }
+
+async function checkout() {
+  if (!auth.currentUser) return openAuth();
+  if (!chosen().length) return alert('Select at least one seat.');
+  try {
+    const r = await api('/reserve-seats', { method: 'POST', body: JSON.stringify({ user_id: S.userId, showtime_id: S.show.showtime_id, seat_ids: chosen().map(s => s.seat_id) }) });
+    S.reservationId = r.reservation_id; S.expires = new Date(r.expires_at).getTime();
+    $('summary').innerHTML = `<p><b>${S.movie.title}</b><br>${S.theatre.name}<br>${S.show.date} • ${S.show.time}<br>Seats: ${chosen().map(s => s.seat_number).join(', ')}<br><b>Total: ₹${chosen().reduce((a,s) => a+s.price,0)}</b></p>`;
+    $('pay').classList.remove('hidden'); $('book').classList.add('hidden');
+    clearInterval(S.timer);
+    S.timer = setInterval(() => {
+      const left = Math.max(0, S.expires - Date.now());
+      $('clock').textContent = `${String(Math.floor(left/60000)).padStart(2,'0')}:${String(Math.floor(left/1000)%60).padStart(2,'0')}`;
+      if (!left) { clearInterval(S.timer); S.reservationId = null; alert('Reservation expired.'); hidePay(); selectShow(S.show.showtime_id); }
+    }, 250);
+  } catch (e) { alert(e.message); }
+}
+
+async function confirmPay() {
+  if (!S.reservationId) return alert('Your reservation has expired.');
+  try {
+    clearInterval(S.timer);
+    const b = await api('/book-tickets', { method: 'POST', body: JSON.stringify({ user_id: S.userId, showtime_id: S.show.showtime_id, reservation_id: S.reservationId }) });
+    S.bookingId = b.booking_id;
+    $('details').innerHTML = `<p><b>Booking ID:</b> BTS-${b.booking_id}</p><p>${S.movie.title} • ${S.theatre.name} • ${S.show.time}</p><p>Seats: ${chosen().map(s => s.seat_number).join(', ')} • ₹${b.total_price}</p>`;
+    $('qr').innerHTML = `<img width="190" alt="Booking QR" src="https://api.qrserver.com/v1/create-qr-code/?size=190x190&data=${encodeURIComponent('BTS-' + b.booking_id)}">`;
+    $('pay').classList.add('hidden'); $('done').classList.remove('hidden');
+    S.reservationId = null;
+    await loadMovies();
+    window.scrollTo({ top: $('done').offsetTop - 70, behavior: 'smooth' });
+  } catch (e) { alert(e.message); }
+}
+
+function hideAll() { $('book').classList.add('hidden'); }
+function hidePay() { clearInterval(S.timer); $('pay').classList.add('hidden'); $('book').classList.remove('hidden'); }
+function printPage() { window.print(); }
+
+$('search').oninput = e => loadMovies(e.target.value);
+document.querySelectorAll('.pill').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.pill').forEach(x => x.classList.remove('active'));
+  b.classList.add('active'); loadMovies($('search').value, b.dataset.g);
+});
+
+let confirmationResult = null, recaptcha = null;
+async function syncUser(user) {
+  if (!user) { S.userId = null; $('userLabel').textContent = ''; $('signin').textContent = 'Sign in'; return; }
+  try {
+    const r = await api('/auth/signup', { method: 'POST', body: JSON.stringify({ firebase_uid: user.uid, email: user.email || null, phone_number: user.phoneNumber || null }) });
+    S.userId = r.user_id;
+    $('userLabel').textContent = user.displayName || user.email || user.phoneNumber || 'Signed in';
+    $('signin').textContent = 'Sign out';
+  } catch (e) { $('authError').textContent = e.message; }
+}
+
+function openAuth() { $('authModal').classList.remove('hidden'); $('authError').textContent = ''; }
+function closeAuth() { $('authModal').classList.add('hidden'); }
+$('signin').onclick = async () => auth.currentUser ? await signOut(auth) : openAuth();
+$('googleBtn').onclick = async () => { try { await signInWithPopup(auth, googleProvider); closeAuth(); } catch (e) { $('authError').textContent = e.message; } };
+$('phoneBtn').onclick = async () => { try {
+  if (!recaptcha) recaptcha = new RecaptchaVerifier(auth, 'recaptcha-container', { size: 'invisible' });
+  confirmationResult = await signInWithPhoneNumber(auth, $('phoneInput').value.trim(), recaptcha);
+  $('otpArea').classList.remove('hidden'); $('phoneBtn').classList.add('hidden');
+} catch (e) { $('authError').textContent = e.message; } };
+$('verifyBtn').onclick = async () => { try { await confirmationResult.confirm($('otpInput').value.trim()); closeAuth(); } catch (e) { $('authError').textContent = 'Invalid OTP. Please try again.'; } };
+
+onAuthStateChanged(auth, syncUser);
+window.openBook = openBook; window.selectTheatre = selectTheatre; window.selectShow = selectShow; window.toggle = toggle;
+window.checkout = checkout; window.confirmPay = confirmPay; window.hideAll = hideAll; window.hidePay = hidePay; window.print = printPage; window.closeAuth = closeAuth;
+
+loadMovies();
