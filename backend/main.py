@@ -227,6 +227,7 @@ def book_tickets(payload: BookingRequest, uid: str = Depends(current_firebase_ui
         raise HTTPException(403, "User mismatch")
     try:
         b = confirm_booking(db, payload.user_id, payload.showtime_id, payload.reservation_id)
+        await seat_socket_manager.broadcast(payload.showtime_id)
         return {
             "booking_id": b.booking_id,
             "total_price": float(b.total_price),
