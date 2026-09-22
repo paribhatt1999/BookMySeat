@@ -1,7 +1,7 @@
 import { auth, googleProvider, signInWithPopup, RecaptchaVerifier, signInWithPhoneNumber, onAuthStateChanged, signOut } from './firebase.js';
 
 // Same-origin API: FastAPI serves both the API and the frontend on Vercel.
-const API = '';
+const API = '/api';
 function localDate() { const d = new Date(); return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d); }
 let S = { movie: null, theatre: null, show: null, seats: [], expires: null, timer: null, userId: null, reservationId: null, bookingId: null };
 
