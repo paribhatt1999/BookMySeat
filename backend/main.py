@@ -1,7 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timezone
+import json
+import time
+from urllib.request import Request, urlopen
 
 import jwt
-from jwt import PyJWKClient
+from cryptography import x509
 from fastapi import Depends, FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
@@ -13,18 +16,35 @@ from .models import Booking, Movie, Seat, SeatReservation, Showtime, Theatre, Us
 from .schemas import BookingRequest, CancelRequest, ReservationRequest, UserUpsert
 from .services import confirm_booking, release_expired, reserve
 
-FIREBASE_JWKS_URL = "https://www.googleapis.com/service_accounts/v1/metadata/x509/securetoken@system.gserviceaccount.com"
-jwks_client = PyJWKClient(FIREBASE_JWKS_URL)
+FIREBASE_CERTS_URL = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"
+_firebase_certs = {}
+_firebase_certs_expires_at = 0.0
 
-app = FastAPI(title="BookTheSeat.com API", version="1.1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[x.strip() for x in settings.cors_origins.split(",")],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-Base.metadata.create_all(bind=engine)
+
+def _get_firebase_certs() -> dict:
+    global _firebase_certs, _firebase_certs_expires_at
+    now = time.time()
+    if _firebase_certs and now < _firebase_certs_expires_at:
+        return _firebase_certs
+
+    request = Request(FIREBASE_CERTS_URL, headers={"User-Agent": "BookTheSeat/1.0"})
+    with urlopen(request, timeout=10) as response:
+        raw = response.read().decode("utf-8")
+        cache_control = response.headers.get("Cache-Control", "")
+
+    certificates = json.loads(raw)
+    _firebase_certs = certificates
+    max_age = 3600
+    for part in cache_control.split(","):
+        part = part.strip()
+        if part.startswith("max-age="):
+            try:
+                max_age = max(60, int(part.split("=", 1)[1]))
+            except ValueError:
+                pass
+            break
+    _firebase_certs_expires_at = time.time() + max_age
+    return _firebase_certs
 
 
 def current_firebase_uid(authorization: str | None = Header(default=None)) -> str:
@@ -36,14 +56,35 @@ def current_firebase_uid(authorization: str | None = Header(default=None)) -> st
         raise HTTPException(401, "Authentication required")
 
     try:
-        signing_key = jwks_client.get_signing_key_from_jwt(token).key
+        header = jwt.get_unverified_header(token)
+        if header.get("alg") != "RS256":
+            raise HTTPException(401, "Invalid Firebase token")
+
+        kid = header.get("kid")
+        if not kid:
+            raise HTTPException(401, "Invalid Firebase token")
+
+        certificates = _get_firebase_certs()
+        certificate_pem = certificates.get(kid)
+        if not certificate_pem:
+            _firebase_certs.clear()
+            certificate_pem = _get_firebase_certs().get(kid)
+        if not certificate_pem:
+            raise HTTPException(401, "Invalid Firebase token")
+
+        certificate = x509.load_pem_x509_certificate(certificate_pem.encode("utf-8"))
         decoded = jwt.decode(
             token,
-            signing_key,
+            certificate.public_key(),
             algorithms=["RS256"],
             audience=settings.firebase_project_id,
             issuer=f"https://securetoken.google.com/{settings.firebase_project_id}",
+            options={"require": ["exp", "iat", "sub", "auth_time"]},
         )
+
+        if decoded["auth_time"] > int(datetime.now(timezone.utc).timestamp()):
+            raise HTTPException(401, "Invalid Firebase token")
+
         uid = decoded.get("sub")
         if not uid:
             raise HTTPException(401, "Invalid Firebase token")
@@ -59,6 +100,17 @@ def current_user(db: Session, uid: str) -> User:
     if not user:
         raise HTTPException(401, "User profile not found")
     return user
+
+
+app = FastAPI(title="BookTheSeat.com API", version="1.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[x.strip() for x in settings.cors_origins.split(",")],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+Base.metadata.create_all(bind=engine)
 
 
 @app.get("/health")
