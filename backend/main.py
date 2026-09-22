@@ -118,6 +118,14 @@ app.add_middleware(
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
+@app.middleware("http")
+async def api_prefix_compatibility(request, call_next):
+    # The documented API uses /api/* while legacy local clients use /*.
+    # Normalize /api/* internally so both forms remain compatible.
+    if request.scope["path"].startswith("/api/"):
+        request.scope["path"] = request.scope["path"][4:]
+    return await call_next(request)
+
 
 @app.get("/health")
 def health():
