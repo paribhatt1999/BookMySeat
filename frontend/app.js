@@ -77,7 +77,7 @@ function connectSeatUpdates(showtimeId) {
     const ws = new WebSocket(protocol + '//' + location.host + '/ws/seats/' + showtimeId);
     ws.onopen = () => ws.send('subscribe');
     ws.onmessage = () => selectShow(showtimeId);
-    ws.onclose = () => delete window.__seatSockets[showtimeId];
+    ws.onclose = () => { delete window.__seatSockets[showtimeId]; window.__seatPolling = window.__seatPolling || {}; if (!window.__seatPolling[showtimeId]) window.__seatPolling[showtimeId] = setInterval(() => selectShow(showtimeId), 4000); };
     ws.onerror = () => ws.close();
     window.__seatSockets[showtimeId] = ws;
   } catch (_) {}
