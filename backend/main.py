@@ -221,7 +221,6 @@ def reserve_seats(payload: ReservationRequest, uid: str = Depends(current_fireba
         raise HTTPException(403, "User mismatch")
     try:
         r = reserve(db, payload.user_id, payload.showtime_id, payload.seat_ids)
-        await seat_socket_manager.broadcast(payload.showtime_id)
         return {"reservation_id": r.reservation_id, "expires_at": r.reservation_expiry}
     except ValueError as e:
         db.rollback()
@@ -235,7 +234,6 @@ def book_tickets(payload: BookingRequest, uid: str = Depends(current_firebase_ui
         raise HTTPException(403, "User mismatch")
     try:
         b = confirm_booking(db, payload.user_id, payload.showtime_id, payload.reservation_id)
-        await seat_socket_manager.broadcast(payload.showtime_id)
         return {
             "booking_id": b.booking_id,
             "total_price": float(b.total_price),
