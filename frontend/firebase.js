@@ -1,0 +1,5 @@
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, RecaptchaVerifier, signInWithPhoneNumber, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js";
+const firebaseConfig={apiKey:"AIzaSyCHEiAIStYdfnOhy0uBjOSF9vuxSDT1vfc",authDomain:"bookmyseat-8d477.firebaseapp.com",projectId:"bookmyseat-8d477",storageBucket:"bookmyseat-8d477.firebasestorage.app",messagingSenderId:"998275535843",appId:"1:998275535843:web:53f139adf29fd1c61fc6d6",measurementId:"G-Q9NGK9ZDKJ"};
+const app=initializeApp(firebaseConfig);const auth=getAuth(app);const googleProvider=new GoogleAuthProvider();
+export {auth,googleProvider,signInWithPopup,RecaptchaVerifier,signInWithPhoneNumber,onAuthStateChanged,signOut};
