@@ -1,82 +1,143 @@
-from fastapi import Depends,FastAPI,HTTPException
+from datetime import datetime
+import firebase_admin
+from firebase_admin import credentials, auth as firebase_auth
+from fastapi import Depends, FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .config import settings
-from .db import Base,engine,get_db
-from .models import Booking,Movie,Seat,SeatReservation,Showtime,Theatre,User
-from .schemas import BookingRequest,CancelRequest,ReservationRequest,UserUpsert
-from .services import confirm_booking,release_expired,reserve
+from .db import Base, engine, get_db
+from .models import Booking, Movie, Seat, SeatReservation, Showtime, Theatre, User
+from .schemas import BookingRequest, CancelRequest, ReservationRequest, UserUpsert
+from .services import confirm_booking, release_expired, reserve
 
-app=FastAPI(title="BookTheSeat.com API",version="1.0.0")
-app.add_middleware(CORSMiddleware,allow_origins=[x.strip() for x in settings.cors_origins.split(",")],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
+if not firebase_admin._apps and settings.firebase_project_id and settings.firebase_client_email and settings.firebase_private_key:
+    cred = credentials.Certificate({
+        "type": "service_account",
+        "project_id": settings.firebase_project_id,
+        "client_email": settings.firebase_client_email,
+        "private_key": settings.firebase_private_key.replace("\\n", "\n"),
+        "token_uri": "https://oauth2.googleapis.com/token",
+    })
+    firebase_admin.initialize_app(cred)
+
+app = FastAPI(title="BookTheSeat.com API", version="1.1.0")
+app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in settings.cors_origins.split(",")], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 Base.metadata.create_all(bind=engine)
 
+def current_firebase_uid(authorization: str | None = Header(default=None)) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Authentication required")
+    if not firebase_admin._apps:
+        raise HTTPException(503, "Firebase Admin is not configured")
+    try:
+        decoded = firebase_auth.verify_id_token(authorization.split(" ", 1)[1])
+        return decoded["uid"]
+    except Exception:
+        raise HTTPException(401, "Invalid or expired Firebase token")
+
+def current_user(db: Session, uid: str) -> User:
+    user = db.scalar(select(User).where(User.firebase_uid == uid))
+    if not user:
+        raise HTTPException(401, "User profile not found")
+    return user
+
 @app.get("/health")
-def health(): return {"status":"ok"}
+def health():
+    return {"status": "ok"}
 
 @app.post("/auth/signup")
-def signup(payload:UserUpsert,db:Session=Depends(get_db)):
-    user=db.scalar(select(User).where(User.firebase_uid==payload.firebase_uid))
-    if not user: user=User(firebase_uid=payload.firebase_uid,email=payload.email,phone_number=payload.phone_number); db.add(user)
-    else: user.email,user.phone_number=payload.email,payload.phone_number
-    db.commit(); db.refresh(user); return {"user_id":user.user_id,"firebase_uid":user.firebase_uid}
-
-@app.post("/auth/login")
-def login(payload:UserUpsert,db:Session=Depends(get_db)): return signup(payload,db)
+def signup(payload: UserUpsert, uid: str = Depends(current_firebase_uid), db: Session = Depends(get_db)):
+    if payload.firebase_uid != uid:
+        raise HTTPException(403, "Firebase UID does not match token")
+    user = db.scalar(select(User).where(User.firebase_uid == uid))
+    if not user:
+        user = User(firebase_uid=uid, email=payload.email, phone_number=payload.phone_number)
+        db.add(user)
+    else:
+        user.email, user.phone_number = payload.email, payload.phone_number
+    db.commit()
+    db.refresh(user)
+    return {"user_id": user.user_id, "firebase_uid": user.firebase_uid}
 
 @app.get("/movies")
-def movies(genre:str|None=None,search:str|None=None,db:Session=Depends(get_db)):
-    stmt=select(Movie)
-    if genre and genre.lower()!="all": stmt=stmt.where(Movie.genre.ilike(f"%{genre}%"))
-    if search: stmt=stmt.where(Movie.title.ilike(f"%{search}%"))
+def movies(genre: str | None = None, search: str | None = None, db: Session = Depends(get_db)):
+    stmt = select(Movie)
+    if genre and genre.lower() != "all":
+        stmt = stmt.where(Movie.genre.ilike(f"%{genre}%"))
+    if search:
+        stmt = stmt.where(Movie.title.ilike(f"%{search}%"))
     return db.scalars(stmt.order_by(Movie.rating.desc())).all()
 
 @app.get("/movies/{movie_id}")
-def movie(movie_id:int,db:Session=Depends(get_db)):
-    item=db.get(Movie,movie_id)
-    if not item: raise HTTPException(404,"Movie not found")
+def movie(movie_id: int, db: Session = Depends(get_db)):
+    item = db.get(Movie, movie_id)
+    if not item:
+        raise HTTPException(404, "Movie not found")
     return item
 
 @app.get("/theatres")
-def theatres(city:str="Jaipur",db:Session=Depends(get_db)):
+def theatres(city: str = "Jaipur", db: Session = Depends(get_db)):
     return db.scalars(select(Theatre).where(Theatre.city.ilike(city)).order_by(Theatre.name)).all()
 
 @app.get("/showtimes/{movie_id}/{theatre_id}/{date}")
-def showtimes(movie_id:int,theatre_id:int,date:str,db:Session=Depends(get_db)):
-    return db.scalars(select(Showtime).where(Showtime.movie_id==movie_id,Showtime.theatre_id==theatre_id,Showtime.date==date).order_by(Showtime.time)).all()
+def showtimes(movie_id: int, theatre_id: int, date: str, db: Session = Depends(get_db)):
+    return db.scalars(select(Showtime).where(Showtime.movie_id == movie_id, Showtime.theatre_id == theatre_id, Showtime.date == date).order_by(Showtime.time)).all()
 
 @app.get("/seats/{showtime_id}")
-def seats(showtime_id:int,db:Session=Depends(get_db)):
+def seats(showtime_id: int, db: Session = Depends(get_db)):
     release_expired(db)
-    rows=db.scalars(select(Seat).where(Seat.showtime_id==showtime_id).order_by(Seat.row_letter,Seat.seat_number)).all()
-    held={r.seat_id for r in db.scalars(select(SeatReservation).where(SeatReservation.showtime_id==showtime_id,SeatReservation.reservation_expiry>__import__("datetime").datetime.utcnow())).all()}
-    return [{"seat_id":s.seat_id,"seat_number":s.seat_number,"row_letter":s.row_letter,"seat_type":s.seat_type,"price":float(s.price),"is_booked":s.is_booked or s.seat_id in held} for s in rows]
+    rows = db.scalars(select(Seat).where(Seat.showtime_id == showtime_id).order_by(Seat.row_letter, Seat.seat_number)).all()
+    now = datetime.utcnow()
+    held = {r.seat_id for r in db.scalars(select(SeatReservation).where(SeatReservation.showtime_id == showtime_id, SeatReservation.reservation_expiry > now)).all()}
+    return [{"seat_id": s.seat_id, "seat_number": s.seat_number, "row_letter": s.row_letter, "seat_type": s.seat_type, "price": float(s.price), "is_booked": s.is_booked or s.seat_id in held} for s in rows]
 
 @app.post("/reserve-seats")
-def reserve_seats(payload:ReservationRequest,db:Session=Depends(get_db)):
+def reserve_seats(payload: ReservationRequest, uid: str = Depends(current_firebase_uid), db: Session = Depends(get_db)):
+    user = current_user(db, uid)
+    if payload.user_id != user.user_id:
+        raise HTTPException(403, "User mismatch")
     try:
-        r=reserve(db,payload.user_id,payload.showtime_id,payload.seat_ids)
-        return {"reservation_id":r.reservation_id,"expires_at":r.reservation_expiry}
+        r = reserve(db, payload.user_id, payload.showtime_id, payload.seat_ids)
+        return {"reservation_id": r.reservation_id, "expires_at": r.reservation_expiry}
     except ValueError as e:
-        db.rollback(); raise HTTPException(409,str(e))
+        db.rollback()
+        raise HTTPException(409, str(e))
 
 @app.post("/book-tickets")
-def book_tickets(payload:BookingRequest,db:Session=Depends(get_db)):
+def book_tickets(payload: BookingRequest, uid: str = Depends(current_firebase_uid), db: Session = Depends(get_db)):
+    user = current_user(db, uid)
+    if payload.user_id != user.user_id:
+        raise HTTPException(403, "User mismatch")
     try:
-        b=confirm_booking(db,payload.user_id,payload.showtime_id,payload.reservation_id)
-        return {"booking_id":b.booking_id,"total_price":float(b.total_price),"status":b.booking_status}
+        b = confirm_booking(db, payload.user_id, payload.showtime_id, payload.reservation_id)
+        return {"booking_id": b.booking_id, "total_price": float(b.total_price), "status": b.booking_status, "booking_time": b.booking_time}
     except ValueError as e:
-        db.rollback(); raise HTTPException(409,str(e))
+        db.rollback()
+        raise HTTPException(409, str(e))
 
 @app.post("/cancel-booking")
-def cancel_booking(payload:CancelRequest,db:Session=Depends(get_db)):
-    b=db.scalar(select(Booking).where(Booking.booking_id==payload.booking_id,Booking.user_id==payload.user_id).with_for_update())
-    if not b: raise HTTPException(404,"Booking not found")
-    b.booking_status="cancelled"; db.commit(); return {"status":"cancelled"}
+def cancel_booking(payload: CancelRequest, uid: str = Depends(current_firebase_uid), db: Session = Depends(get_db)):
+    user = current_user(db, uid)
+    if payload.user_id != user.user_id:
+        raise HTTPException(403, "User mismatch")
+    b = db.scalar(select(Booking).where(Booking.booking_id == payload.booking_id, Booking.user_id == user.user_id).with_for_update())
+    if not b:
+        raise HTTPException(404, "Booking not found")
+    b.booking_status = "cancelled"
+    db.commit()
+    return {"status": "cancelled"}
+
+@app.get("/bookings/me")
+def my_bookings(uid: str = Depends(current_firebase_uid), db: Session = Depends(get_db)):
+    user = current_user(db, uid)
+    rows = db.scalars(select(Booking).where(Booking.user_id == user.user_id).order_by(Booking.created_at.desc())).all()
+    return rows
 
 @app.get("/booking/{booking_id}")
-def booking(booking_id:int,db:Session=Depends(get_db)):
-    b=db.get(Booking,booking_id)
-    if not b: raise HTTPException(404,"Booking not found")
+def booking(booking_id: int, uid: str = Depends(current_firebase_uid), db: Session = Depends(get_db)):
+    user = current_user(db, uid)
+    b = db.scalar(select(Booking).where(Booking.booking_id == booking_id, Booking.user_id == user.user_id))
+    if not b:
+        raise HTTPException(404, "Booking not found")
     return b
