@@ -1,4 +1,6 @@
-from datetime import datetime, timezone
+from datetime import date as date_type, datetime, timezone
+from io import BytesIO
+import base64
 import json
 import time
 from pathlib import Path
@@ -6,7 +8,7 @@ from urllib.request import Request, urlopen
 
 import jwt
 from cryptography import x509
-from fastapi import Depends, FastAPI, HTTPException, Header
+from fastapi import Depends, FastAPI, HTTPException, Header, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
@@ -17,6 +19,7 @@ from .db import Base, engine, get_db
 from .models import Booking, Movie, Seat, SeatReservation, Showtime, Theatre, User
 from .schemas import BookingRequest, CancelRequest, ReservationRequest, UserUpsert
 from .services import confirm_booking, release_expired, reserve
+import qrcode
 
 FIREBASE_CERTS_URL = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"
 _firebase_certs = {}
@@ -160,7 +163,7 @@ def theatres(city: str = "Jaipur", db: Session = Depends(get_db)):
 
 
 @app.get("/showtimes/{movie_id}/{theatre_id}/{date}")
-def showtimes(movie_id: int, theatre_id: int, date: str, db: Session = Depends(get_db)):
+def showtimes(movie_id: int, theatre_id: int, date: date_type, db: Session = Depends(get_db)):
     return db.scalars(
         select(Showtime)
         .where(
@@ -254,11 +257,39 @@ def cancel_booking(payload: CancelRequest, uid: str = Depends(current_firebase_u
 @app.get("/bookings/me")
 def my_bookings(uid: str = Depends(current_firebase_uid), db: Session = Depends(get_db)):
     user = current_user(db, uid)
-    return db.scalars(
-        select(Booking)
-        .where(Booking.user_id == user.user_id)
-        .order_by(Booking.created_at.desc())
+    rows = db.scalars(
+        select(Booking).where(Booking.user_id == user.user_id).order_by(Booking.created_at.desc())
     ).all()
+    result = []
+    for b in rows:
+        show = db.get(Showtime, b.showtime_id)
+        movie = db.get(Movie, show.movie_id) if show else None
+        theatre = db.get(Theatre, show.theatre_id) if show else None
+        seat_rows = db.execute(
+            select(Seat.seat_number).join(BookingSeat, BookingSeat.seat_id == Seat.seat_id)
+            .where(BookingSeat.booking_id == b.booking_id)
+        ).scalars().all()
+        result.append({
+            "booking_id": b.booking_id, "status": b.booking_status,
+            "total_price": float(b.total_price), "booking_time": b.booking_time,
+            "movie": movie.title if movie else None, "theatre": theatre.name if theatre else None,
+            "date": show.date if show else None, "time": show.time if show else None,
+            "seats": seat_rows,
+        })
+    return result
+
+
+@app.get("/booking/{booking_id}/qr")
+def booking_qr(booking_id: int, uid: str = Depends(current_firebase_uid), db: Session = Depends(get_db)):
+    user = current_user(db, uid)
+    b = db.scalar(select(Booking).where(Booking.booking_id == booking_id, Booking.user_id == user.user_id))
+    if not b:
+        raise HTTPException(404, "Booking not found")
+    payload = f"BookTheSeat|BTS-{b.booking_id}|{b.showtime_id}|{b.total_price}|{b.booking_status}"
+    image = qrcode.make(payload)
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return {"booking_id": b.booking_id, "qr_data": "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()}
 
 
 @app.get("/booking/{booking_id}")
@@ -273,6 +304,38 @@ def booking(booking_id: int, uid: str = Depends(current_firebase_uid), db: Sessi
     if not b:
         raise HTTPException(404, "Booking not found")
     return b
+
+
+class SeatSocketManager:
+    def __init__(self):
+        self.connections = {}
+
+    async def connect(self, showtime_id, websocket):
+        await websocket.accept()
+        self.connections.setdefault(showtime_id, set()).add(websocket)
+
+    def disconnect(self, showtime_id, websocket):
+        self.connections.get(showtime_id, set()).discard(websocket)
+
+    async def broadcast(self, showtime_id):
+        for websocket in list(self.connections.get(showtime_id, set())):
+            try:
+                await websocket.send_json({"showtime_id": showtime_id, "event": "seat_state_changed"})
+            except Exception:
+                self.disconnect(showtime_id, websocket)
+
+
+seat_socket_manager = SeatSocketManager()
+
+
+@app.websocket("/ws/seats/{showtime_id}")
+async def seat_updates(websocket: WebSocket, showtime_id: int):
+    await seat_socket_manager.connect(showtime_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        seat_socket_manager.disconnect(showtime_id, websocket)
 
 
 # Keep this mount LAST so API routes above always take precedence.
