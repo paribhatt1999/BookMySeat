@@ -1,12 +1,14 @@
 from datetime import datetime, timezone
 import json
 import time
+from pathlib import Path
 from urllib.request import Request, urlopen
 
 import jwt
 from cryptography import x509
 from fastapi import Depends, FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -102,15 +104,16 @@ def current_user(db: Session, uid: str) -> User:
     return user
 
 
-app = FastAPI(title="BookTheSeat.com API", version="1.1.0")
+app = FastAPI(title="BookTheSeat.com API", version="1.2.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[x.strip() for x in settings.cors_origins.split(",")],
+    allow_origins=[x.strip() for x in settings.cors_origins.split(",") if x.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-Base.metadata.create_all(bind=engine)
+
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 
 @app.get("/health")
@@ -158,13 +161,25 @@ def theatres(city: str = "Jaipur", db: Session = Depends(get_db)):
 
 @app.get("/showtimes/{movie_id}/{theatre_id}/{date}")
 def showtimes(movie_id: int, theatre_id: int, date: str, db: Session = Depends(get_db)):
-    return db.scalars(select(Showtime).where(Showtime.movie_id == movie_id, Showtime.theatre_id == theatre_id, Showtime.date == date).order_by(Showtime.time)).all()
+    return db.scalars(
+        select(Showtime)
+        .where(
+            Showtime.movie_id == movie_id,
+            Showtime.theatre_id == theatre_id,
+            Showtime.date == date,
+        )
+        .order_by(Showtime.time)
+    ).all()
 
 
 @app.get("/seats/{showtime_id}")
 def seats(showtime_id: int, db: Session = Depends(get_db)):
     release_expired(db)
-    rows = db.scalars(select(Seat).where(Seat.showtime_id == showtime_id).order_by(Seat.row_letter, Seat.seat_number)).all()
+    rows = db.scalars(
+        select(Seat)
+        .where(Seat.showtime_id == showtime_id)
+        .order_by(Seat.row_letter, Seat.seat_number)
+    ).all()
     now = datetime.utcnow()
     held = {
         r.seat_id
@@ -208,7 +223,12 @@ def book_tickets(payload: BookingRequest, uid: str = Depends(current_firebase_ui
         raise HTTPException(403, "User mismatch")
     try:
         b = confirm_booking(db, payload.user_id, payload.showtime_id, payload.reservation_id)
-        return {"booking_id": b.booking_id, "total_price": float(b.total_price), "status": b.booking_status, "booking_time": b.booking_time}
+        return {
+            "booking_id": b.booking_id,
+            "total_price": float(b.total_price),
+            "status": b.booking_status,
+            "booking_time": b.booking_time,
+        }
     except ValueError as e:
         db.rollback()
         raise HTTPException(409, str(e))
@@ -219,7 +239,11 @@ def cancel_booking(payload: CancelRequest, uid: str = Depends(current_firebase_u
     user = current_user(db, uid)
     if payload.user_id != user.user_id:
         raise HTTPException(403, "User mismatch")
-    b = db.scalar(select(Booking).where(Booking.booking_id == payload.booking_id, Booking.user_id == user.user_id).with_for_update())
+    b = db.scalar(
+        select(Booking)
+        .where(Booking.booking_id == payload.booking_id, Booking.user_id == user.user_id)
+        .with_for_update()
+    )
     if not b:
         raise HTTPException(404, "Booking not found")
     b.booking_status = "cancelled"
@@ -230,14 +254,28 @@ def cancel_booking(payload: CancelRequest, uid: str = Depends(current_firebase_u
 @app.get("/bookings/me")
 def my_bookings(uid: str = Depends(current_firebase_uid), db: Session = Depends(get_db)):
     user = current_user(db, uid)
-    rows = db.scalars(select(Booking).where(Booking.user_id == user.user_id).order_by(Booking.created_at.desc())).all()
-    return rows
+    return db.scalars(
+        select(Booking)
+        .where(Booking.user_id == user.user_id)
+        .order_by(Booking.created_at.desc())
+    ).all()
 
 
 @app.get("/booking/{booking_id}")
 def booking(booking_id: int, uid: str = Depends(current_firebase_uid), db: Session = Depends(get_db)):
     user = current_user(db, uid)
-    b = db.scalar(select(Booking).where(Booking.booking_id == booking_id, Booking.user_id == user.user_id))
+    b = db.scalar(
+        select(Booking).where(
+            Booking.booking_id == booking_id,
+            Booking.user_id == user.user_id,
+        )
+    )
     if not b:
         raise HTTPException(404, "Booking not found")
     return b
+
+
+# Keep this mount LAST so API routes above always take precedence.
+# It makes the existing plain HTML/CSS/JS frontend available at the Vercel root.
+if FRONTEND_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
