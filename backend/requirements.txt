@@ -6,4 +6,4 @@ pydantic==2.11.7
 pydantic-settings==2.10.1
 python-dotenv==1.1.1
 qrcode[pil]==8.2
-firebase-admin==7.1.0
+PyJWT[crypto]==2.10.1
