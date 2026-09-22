@@ -125,12 +125,13 @@ async function confirmPay() {
     $('pay').classList.add('hidden'); $('done').classList.remove('hidden');
     S.reservationId = null;
     await loadMovies();
+    await loadHistory();
     window.scrollTo({ top: $('done').offsetTop - 70, behavior: 'smooth' });
   } catch (e) { alert(e.message); }
 }
 
 function hideAll() { $('book').classList.add('hidden'); }
-function hidePay() { clearInterval(S.timer); $('pay').classList.add('hidden'); $('book').classList.remove('hidden'); }
+async function hidePay() { clearInterval(S.timer); if (S.reservationId && S.show) { try { await api('/release-reservation', { method: 'POST', body: JSON.stringify({ user_id: S.userId, showtime_id: S.show.showtime_id, reservation_id: S.reservationId }) }); } catch (_) {} } S.reservationId = null; $('pay').classList.add('hidden'); $('book').classList.remove('hidden'); if (S.show) await selectShow(S.show.showtime_id); }
 function printPage() { window.print(); }
 
 $('search').oninput = e => loadMovies(e.target.value);
@@ -139,12 +140,28 @@ document.querySelectorAll('.pill').forEach(b => b.onclick = () => {
   b.classList.add('active'); loadMovies($('search').value, b.dataset.g);
 });
 
+async function loadHistory() {
+  if (!auth.currentUser) {
+    $('historyList').innerHTML = '<p class="muted">Sign in to view your bookings.</p>';
+    return;
+  }
+  try {
+    const rows = await api('/bookings/me');
+    $('historyList').innerHTML = rows.length
+      ? rows.map(b => '<div class="item"><b>BTS-' + b.booking_id + ' • ' + (b.movie || 'Movie') + '</b><div class="meta">' + (b.theatre || '') + ' • ' + (b.date || '') + ' • ' + (b.time || '') + '</div><div>Seats: ' + (b.seats || []).join(', ') + ' • ₹' + b.total_price + ' • ' + b.status + '</div></div>').join('')
+      : '<p class="muted">No bookings yet.</p>';
+  } catch (e) {
+    $('historyList').innerHTML = '<p class="muted">Could not load history: ' + e.message + '</p>';
+  }
+}
+
 let confirmationResult = null, recaptcha = null;
 async function syncUser(user) {
-  if (!user) { S.userId = null; $('userLabel').textContent = ''; $('signin').textContent = 'Sign in'; return; }
+  if (!user) { S.userId = null; $('userLabel').textContent = ''; $('signin').textContent = 'Sign in'; loadHistory(); return; }
   try {
     const r = await api('/auth/signup', { method: 'POST', body: JSON.stringify({ firebase_uid: user.uid, email: user.email || null, phone_number: user.phoneNumber || null }) });
     S.userId = r.user_id;
+    await loadHistory();
     $('userLabel').textContent = user.displayName || user.email || user.phoneNumber || 'Signed in';
     $('signin').textContent = 'Sign out';
   } catch (e) { $('authError').textContent = e.message; }
