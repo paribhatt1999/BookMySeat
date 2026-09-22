@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import Base, engine, get_db
-from .models import Booking, Movie, Seat, SeatReservation, Showtime, Theatre, User
+from .models import Booking, BookingSeat, Movie, Seat, SeatReservation, Showtime, Theatre, User
 from .schemas import BookingRequest, CancelRequest, ReservationRequest, UserUpsert
 from .services import confirm_booking, release_expired, reserve
 import qrcode
