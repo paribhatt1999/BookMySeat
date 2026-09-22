@@ -227,6 +227,28 @@ def reserve_seats(payload: ReservationRequest, uid: str = Depends(current_fireba
         raise HTTPException(409, str(e))
 
 
+@app.post("/release-reservation")
+def release_reservation(payload: BookingRequest, uid: str = Depends(current_firebase_uid), db: Session = Depends(get_db)):
+    user = current_user(db, uid)
+    if payload.user_id != user.user_id:
+        raise HTTPException(403, "User mismatch")
+    reservation = db.scalar(
+        select(SeatReservation).where(
+            SeatReservation.reservation_id == payload.reservation_id,
+            SeatReservation.user_id == user.user_id,
+            SeatReservation.showtime_id == payload.showtime_id,
+        )
+    )
+    if not reservation:
+        raise HTTPException(404, "Reservation not found")
+    db.query(SeatReservation).filter(
+        SeatReservation.user_id == user.user_id,
+        SeatReservation.showtime_id == payload.showtime_id,
+    ).delete(synchronize_session=False)
+    db.commit()
+    return {"status": "released"}
+
+
 @app.post("/book-tickets")
 def book_tickets(payload: BookingRequest, uid: str = Depends(current_firebase_uid), db: Session = Depends(get_db)):
     user = current_user(db, uid)
