@@ -2,6 +2,7 @@ import { auth, googleProvider, signInWithPopup, RecaptchaVerifier, signInWithPho
 
 // Same-origin API: FastAPI serves both the API and the frontend on Vercel.
 const API = '';
+function localDate() { const d = new Date(); return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d); }
 let S = { movie: null, theatre: null, show: null, seats: [], expires: null, timer: null, userId: null, reservationId: null, bookingId: null };
 
 const $ = id => document.getElementById(id);
@@ -51,7 +52,7 @@ async function selectTheatre(theatreId) {
   try {
     const all = await api('/theatres?city=Jaipur');
     S.theatre = all.find(t => t.theatre_id === theatreId);
-    const date = new Date().toISOString().slice(0, 10);
+    const date = localDate();
     const shows = await api(`/showtimes/${S.movie.movie_id}/${theatreId}/${date}`);
     $('shows').innerHTML = shows.length ? shows.map(s => `<div class="item" onclick="selectShow(${s.showtime_id})"><b>${s.time}</b><div class="meta">${s.format} • ${s.language}</div></div>`).join('') : '<p class="muted">No shows today.</p>';
   } catch (e) { alert(e.message); }
@@ -59,12 +60,27 @@ async function selectTheatre(theatreId) {
 
 async function selectShow(showtimeId) {
   try {
-    const shows = await api(`/showtimes/${S.movie.movie_id}/${S.theatre.theatre_id}/${new Date().toISOString().slice(0,10)}`);
+    const shows = await api(`/showtimes/${S.movie.movie_id}/${S.theatre.theatre_id}/${localDate()}`);
     S.show = shows.find(s => s.showtime_id === showtimeId);
     const data = await api('/seats/' + showtimeId);
     S.seats = data.map(s => ({ ...s, selected: false, sold: s.is_booked }));
-    renderSeats(); update();
+    renderSeats(); update(); connectSeatUpdates(showtimeId);
   } catch (e) { alert(e.message); }
+}
+
+
+function connectSeatUpdates(showtimeId) {
+  if (!window.WebSocket || window.__seatSockets?.[showtimeId]) return;
+  window.__seatSockets = window.__seatSockets || {};
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  try {
+    const ws = new WebSocket(protocol + '//' + location.host + '/ws/seats/' + showtimeId);
+    ws.onopen = () => ws.send('subscribe');
+    ws.onmessage = () => selectShow(showtimeId);
+    ws.onclose = () => delete window.__seatSockets[showtimeId];
+    ws.onerror = () => ws.close();
+    window.__seatSockets[showtimeId] = ws;
+  } catch (_) {}
 }
 
 function renderSeats() {
@@ -104,7 +120,8 @@ async function confirmPay() {
     const b = await api('/book-tickets', { method: 'POST', body: JSON.stringify({ user_id: S.userId, showtime_id: S.show.showtime_id, reservation_id: S.reservationId }) });
     S.bookingId = b.booking_id;
     $('details').innerHTML = `<p><b>Booking ID:</b> BTS-${b.booking_id}</p><p>${S.movie.title} • ${S.theatre.name} • ${S.show.time}</p><p>Seats: ${chosen().map(s => s.seat_number).join(', ')} • ₹${b.total_price}</p>`;
-    $('qr').innerHTML = `<img width="190" alt="Booking QR" src="https://api.qrserver.com/v1/create-qr-code/?size=190x190&data=${encodeURIComponent('BTS-' + b.booking_id)}">`;
+    const qr = await api('/booking/' + b.booking_id + '/qr');
+    $('qr').innerHTML = `<img width="190" alt="Booking QR" src="${qr.qr_data}">`;
     $('pay').classList.add('hidden'); $('done').classList.remove('hidden');
     S.reservationId = null;
     await loadMovies();
