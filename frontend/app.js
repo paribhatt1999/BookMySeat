@@ -1,6 +1,7 @@
 import { auth, googleProvider, signInWithPopup, RecaptchaVerifier, signInWithPhoneNumber, onAuthStateChanged, signOut } from './firebase.js';
 
-const API = 'http://localhost:8000';
+// Same-origin API: FastAPI serves both the API and the frontend on Vercel.
+const API = '';
 let S = { movie: null, theatre: null, show: null, seats: [], expires: null, timer: null, userId: null, reservationId: null, bookingId: null };
 
 const $ = id => document.getElementById(id);
